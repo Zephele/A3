@@ -1,0 +1,76 @@
+import pandas as pd
+
+# 1. Carregar os ficheiros CSV
+df_prefeitos = pd.read_csv("bq-results.csv") # Ajuste o nome se necessário
+df_ideb = pd.read_csv("br_inep_ideb_municipio.csv")
+
+# 2. Converter IDs para String
+df_prefeitos['id_municipio'] = df_prefeitos['id_municipio'].astype(str)
+df_ideb['id_municipio'] = df_ideb['id_municipio'].astype(str)
+
+# 3. Filtrar APENAS prefeitos eleitos
+df_eleitos = df_prefeitos[
+    (df_prefeitos['cargo'].str.lower() == 'prefeito') & 
+    (df_prefeitos['resultado'].str.lower().str.contains('eleito')) &
+    (~df_prefeitos['resultado'].str.lower().str.contains('nao eleito'))
+].copy()
+
+# 4. Mapear o Ano da Eleição para os Anos do Mandato
+# Exemplo: Eleição 2016 -> Mandato 2017, 2018, 2019, 2020
+mandatos = []
+for _, row in df_eleitos.iterrows():
+    ano_eleicao = row['ano']
+    for ano_mandato in range(ano_eleicao + 1, ano_eleicao + 5):
+        mandatos.append({
+            'id_municipio': row['id_municipio'],
+            'sigla_uf': row['sigla_uf'],
+            'ano': ano_mandato,
+            'sigla_partido': row['sigla_partido']
+        })
+
+df_mandatos = pd.DataFrame(mandatos)
+
+# 5. Cruzar a base de mandatos com os dados do Ideb
+df_merged = pd.merge(
+    df_mandatos,
+    df_ideb,
+    on=['id_municipio', 'ano'],
+    how='inner'
+)
+
+print("\n--- BASE CRUZADA COM SUCESSO ---")
+print(f"Total de registos cruzados: {len(df_merged)}")
+print(df_merged[['ano', 'sigla_uf_x', 'id_municipio', 'sigla_partido', 'ideb', 'rede']].head(10))
+
+# 6. Salvar o dataset pronto para o modelo ML
+df_merged.to_csv("dataset_processado_a3.csv", index=False)
+print("\nDataset salvo como 'dataset_processado_a3.csv'!")
+
+
+================================
+
+import pandas as pd
+import numpy as np
+
+# 1. Carregar a base cruzada
+df = pd.read_csv("dataset_processado_a3.csv")
+
+# 2. Filtrar apenas pela Rede Municipal e remover notas nulas (NaN)
+df_clean = df[
+    (df['rede'] == 'municipal') & 
+    (df['ideb'].notna())
+].copy()
+
+# 3. Remover duplicados se houver e manter colunas relevantes
+colunas_relevantes = ['ano', 'sigla_uf_x', 'id_municipio', 'sigla_partido', 'ideb', 'taxa_aprovacao']
+# Mantém apenas colunas existentes no dataset
+colunas_presentes = [c for c in colunas_relevantes if c in df_clean.columns]
+df_model = df_clean[colunas_presentes].dropna().drop_duplicates()
+
+print(f"Total de linhas prontas para o modelo: {len(df_model)}")
+print("\nDistribuição dos partidos na base limpa:")
+print(df_model['sigla_partido'].value_counts().head(10))
+
+# 4. Salvar base final de treino
+df_model.to_csv("base_treino_model.csv", index=False)
+print("\nBase de treino salva como 'base_treino_model.csv'!")
