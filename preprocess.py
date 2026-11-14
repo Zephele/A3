@@ -6,14 +6,17 @@ import pandas as pd
 
 
 BASE_DIR = Path(__file__).resolve().parent
-CAMINHO_PREFEITOS = BASE_DIR / "bq-results.csv"
-CAMINHO_IDEB = BASE_DIR / "br_inep_ideb_municipio.csv"
-CAMINHO_INTERMEDIARIO = BASE_DIR / "dataset_processado_a3.csv"
-CAMINHO_SAIDA = BASE_DIR / "base_treino_model.csv"
+DIR_DADOS_BRUTOS = BASE_DIR / "dados" / "brutos"
+DIR_DADOS_PROCESSADOS = BASE_DIR / "dados" / "processados"
+CAMINHO_PREFEITOS = DIR_DADOS_BRUTOS / "bq-results.csv"
+CAMINHO_IDEB = DIR_DADOS_BRUTOS / "br_inep_ideb_municipio.csv"
+CAMINHO_INTERMEDIARIO = DIR_DADOS_PROCESSADOS / "dataset_processado_a3.csv"
+CAMINHO_SAIDA = DIR_DADOS_PROCESSADOS / "base_treino_model.csv"
 
 
 def main() -> None:
     """Gera as bases intermediária e final usadas pelo modelo."""
+    DIR_DADOS_PROCESSADOS.mkdir(parents=True, exist_ok=True)
     df_prefeitos = pd.read_csv(CAMINHO_PREFEITOS)
     df_ideb = pd.read_csv(CAMINHO_IDEB)
     df_prefeitos["id_municipio"] = df_prefeitos["id_municipio"].astype(str).str.strip()

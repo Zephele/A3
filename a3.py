@@ -7,21 +7,34 @@ pela despesa em educação?
 Desenho do experimento
 ----------------------
 * Avaliação temporal: treino com anos <= 2019, teste com anos >= 2021.
-* O IDEB é medido a cada 2 anos; ``ideb_anterior`` é o IDEB do mesmo município
-  e da mesma etapa dois anos antes (sem preenchimento artificial).
+* O IDEB é medido a cada 2 anos; ``ideb_anterior`` e ``taxa_aprovacao_anterior``
+  são os valores do mesmo município e etapa dois anos antes (sem preenchimento
+  artificial). A taxa de aprovação do *próprio* ano não é usada: o IDEB é
+  construído a partir dela, o que causaria vazamento.
 * Baselines: média do treino e persistência (prever o IDEB anterior).
 * Dois alvos: ``nivel`` (IDEB) e ``variacao`` (IDEB - IDEB anterior). Em
   ``variacao`` o modelo prevê a mudança e soma ao IDEB anterior; as métricas
   são sempre calculadas na escala do IDEB.
 * Ablação em blocos (cada bloco inclui o anterior):
-    A  inércia   = ideb_anterior + ano + etapa
-    B  + região  = A + UF
-    C  + despesa = B + log(despesa em educação)
-    D  + partido = C + partido do prefeito
+    A0 inércia básica = ideb_anterior + ano + etapa
+    A  + taxa de aprovação anterior
+    B  + região       = A + UF
+    C  + despesa      = B + log(despesa em educação)
+    D  + partido      = C + partido do prefeito (siglas harmonizadas)
   A contribuição do partido é a diferença entre D e C, com intervalo de
   confiança por bootstrap em blocos de município.
 * Ajuste de hiperparâmetros do Random Forest com validação de janela
-  expansiva (respeita a ordem do tempo), nunca com o conjunto de teste.
+  expansiva (respeita a ordem do tempo), nunca com o conjunto de teste. O
+  ajuste é feito no bloco D e reaproveitado nos demais; isso favorece D, logo
+  a conclusão "o partido não ajuda" é conservadora.
+
+Decisão de pesquisa: harmonização de siglas
+-------------------------------------------
+Fusões e renomeações de partidos fariam siglas novas (ex.: UNIÃO) aparecerem
+só no teste, e o ``OneHotEncoder`` as trataria como "sem partido". O dicionário
+``MAPA_PARTIDOS`` leva as siglas antigas para a sucessora. É uma escolha
+discutível (ex.: PSL e DEM são organizações diferentes que se fundiram) e deve
+ser justificada no relatório; ``HARMONIZAR_PARTIDOS = False`` desliga a regra.
 
 Limitações conhecidas (para o relatório)
 ----------------------------------------
@@ -52,9 +65,14 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 SEED = 42
 BASE_DIR = Path(__file__).resolve().parent
-CAMINHO_DADOS = BASE_DIR / "base_treino_model.csv"
-CAMINHO_DESPESA = BASE_DIR / "investimento_educacao.csv"
-CAMINHO_RESULTADOS = BASE_DIR / "resultados_modelos.csv"
+DIR_DADOS_BRUTOS = BASE_DIR / "dados" / "brutos"
+DIR_DADOS_PROCESSADOS = BASE_DIR / "dados" / "processados"
+DIR_RESULTADOS = BASE_DIR / "resultados"
+CAMINHO_DADOS = DIR_DADOS_PROCESSADOS / "base_treino_model.csv"
+CAMINHO_DESPESA = DIR_DADOS_BRUTOS / "investimento_educacao.csv"
+CAMINHO_RESULTADOS = DIR_RESULTADOS / "resultados_modelos.csv"
+CAMINHO_PARTIDO = DIR_RESULTADOS / "contribuicao_partido.csv"
+CAMINHO_RESUMO_BASE = DIR_RESULTADOS / "resumo_base.csv"
 
 ANO_CORTE_TREINO = 2019
 ANO_INICIO_TESTE = 2021
@@ -63,7 +81,20 @@ PASSO_IDEB = 2  # o IDEB é divulgado a cada dois anos
 COLUNA_ALVO = "ideb"
 MODO_PRINCIPAL = "variacao"  # alinhado à pergunta ("evolução" do indicador)
 N_BOOTSTRAP = 2000
-LIMIAR_RELEVANCIA = 0.01  # diferenças de MAE menores que isso (em pontos de IDEB) são desprezíveis
+N_REPETICOES_PERMUTACAO = 20
+# Diferenças de MAE menores que isso (em pontos de IDEB) são desprezíveis.
+LIMIAR_RELEVANCIA = 0.01
+
+HARMONIZAR_PARTIDOS = True
+MAPA_PARTIDOS = {
+    # renomeações
+    "PMDB": "MDB", "PT DO B": "AVANTE", "PTN": "PODE", "PSDC": "DC",
+    "PR": "PL", "PPS": "CIDADANIA", "PRB": "REPUBLICANOS", "PEN": "PATRIOTA",
+    # fusões e incorporações
+    "PFL": "UNIÃO", "DEM": "UNIÃO", "PSL": "UNIÃO",
+    "PTB": "PRD", "PATRIOTA": "PRD",
+    "PHS": "PODE", "PSC": "PODE", "PROS": "SOLIDARIEDADE", "PPL": "PC DO B",
+}
 
 # Janelas expansivas para o ajuste de hiperparâmetros: (treino até, valida em).
 JANELAS_CV = [(2015, 2017), (2017, 2019)]
@@ -122,21 +153,50 @@ def carregar_e_cruzar_dados(caminho: Path, caminho_despesa: Path) -> pd.DataFram
     )
 
 
-def adicionar_ideb_anterior(df: pd.DataFrame, chave: list[str]) -> pd.DataFrame:
-    """Anexa o IDEB medido ``PASSO_IDEB`` anos antes (mesmo município e etapa).
+def adicionar_valores_anteriores(df: pd.DataFrame, chave: list[str]) -> pd.DataFrame:
+    """Anexa IDEB e taxa de aprovação de ``PASSO_IDEB`` anos antes.
 
     Usa junção por ano (e não ``shift``) para nunca puxar uma medição de um
     ano diferente do esperado quando há lacunas no painel.
     """
-    anterior = df[chave + ["ano", COLUNA_ALVO]].copy()
+    anterior = df[chave + ["ano", COLUNA_ALVO, "taxa_aprovacao"]].copy()
     anterior["ano"] = anterior["ano"] + PASSO_IDEB
-    anterior = anterior.rename(columns={COLUNA_ALVO: "ideb_anterior"})
+    anterior = anterior.rename(columns={
+        COLUNA_ALVO: "ideb_anterior",
+        "taxa_aprovacao": "taxa_aprovacao_anterior",
+    })
     return df.merge(anterior, on=chave + ["ano"], how="left", validate="one_to_one")
 
 
+def percentual_partido_inedito(df: pd.DataFrame, coluna: str) -> float:
+    """% de linhas do teste cujo partido nunca aparece no treino."""
+    treino = df["ano"] <= ANO_CORTE_TREINO
+    teste = df["ano"] >= ANO_INICIO_TESTE
+    vistos = set(df.loc[treino, coluna].unique())
+    return float((~df.loc[teste, coluna].isin(vistos)).mean() * 100)
+
+
+def percentual_troca_partido(df: pd.DataFrame) -> tuple[float, float]:
+    """(% de transições de mandato com troca de partido, % de municípios que trocaram)."""
+    mandatos = df.drop_duplicates(["id_municipio", "ano"]).copy()
+    mandatos["mandato"] = (mandatos["ano"] - 1) // 4  # 2017-2020 -> 504, etc.
+    mandatos = (
+        mandatos.sort_values(["id_municipio", "ano"])
+        .groupby(["id_municipio", "mandato"], as_index=False)["sigla_partido"]
+        .first()
+    )
+    mandatos["anterior"] = mandatos.groupby("id_municipio")["sigla_partido"].shift(1)
+    mandatos["mandato_anterior"] = mandatos.groupby("id_municipio")["mandato"].shift(1)
+    consecutivos = mandatos[mandatos["mandato"] - mandatos["mandato_anterior"] == 1]
+    trocou = consecutivos["sigla_partido"] != consecutivos["anterior"]
+    por_municipio = trocou.groupby(consecutivos["id_municipio"]).any()
+    return float(trocou.mean() * 100), float(por_municipio.mean() * 100)
+
+
 def preparar_dados(caminho: Path, caminho_despesa: Path) -> pd.DataFrame:
-    """Limpa, cria o IDEB anterior e a variação, e restringe ao período com despesa."""
+    """Limpa, harmoniza siglas, cria valores anteriores e restringe a 2013+."""
     df = carregar_e_cruzar_dados(caminho, caminho_despesa)
+    linhas_brutas = len(df)
 
     colunas_cat = ["sigla_partido", "sigla_uf"]
     colunas_etapa = [c for c in ("ensino", "anos_escolares") if c in df.columns]
@@ -149,20 +209,26 @@ def preparar_dados(caminho: Path, caminho_despesa: Path) -> pd.DataFrame:
         df[coluna] = df[coluna].astype("string").str.strip().str.upper()
         df[coluna] = df[coluna].replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
 
+    df["sigla_partido_original"] = df["sigla_partido"]
+    if HARMONIZAR_PARTIDOS:
+        df["sigla_partido"] = df["sigla_partido"].replace(MAPA_PARTIDOS)
+
     df["ano"] = pd.to_numeric(df["ano"], errors="coerce")
     df["despesa_educacao"] = pd.to_numeric(df["despesa_educacao"], errors="coerce")
     df[COLUNA_ALVO] = pd.to_numeric(df[COLUNA_ALVO], errors="coerce")
+    df["taxa_aprovacao"] = pd.to_numeric(df["taxa_aprovacao"], errors="coerce")
     df = df.dropna(
-        subset=["id_municipio", "ano", COLUNA_ALVO] + colunas_cat + colunas_etapa
+        subset=["id_municipio", "ano", COLUNA_ALVO, "taxa_aprovacao"]
+        + colunas_cat + colunas_etapa
     )
 
     chave = ["id_municipio"] + colunas_etapa
     df = df.drop_duplicates(subset=chave + ["ano"]).reset_index(drop=True)
-    df = adicionar_ideb_anterior(df, chave)  # antes de cortar o período
+    df = adicionar_valores_anteriores(df, chave)  # antes de cortar o período
     df["variacao_ideb"] = df[COLUNA_ALVO] - df["ideb_anterior"]
 
     df = df[df["ano"] >= ANO_INICIO_DESPESA].dropna(subset=["despesa_educacao"])
-    df = df.dropna(subset=["ideb_anterior"]).copy()
+    df = df.dropna(subset=["ideb_anterior", "taxa_aprovacao_anterior"]).copy()
 
     # Limite superior da despesa estimado só no treino (evita vazamento) e
     # aplicado por truncamento, sem descartar linhas do teste.
@@ -170,23 +236,74 @@ def preparar_dados(caminho: Path, caminho_despesa: Path) -> pd.DataFrame:
     limite = df.loc[treino, "despesa_educacao"].quantile(0.995)
     df["log_despesa_educacao"] = np.log1p(df["despesa_educacao"].clip(upper=limite))
 
-    # Colunas constantes não informam nada (ex.: 'ensino' só tem 'fundamental').
+    # Colunas constantes não informam nada.
     constantes = [c for c in colunas_etapa if df[c].nunique() < 2]
     if constantes:
         print(f"[INFO] Colunas constantes ignoradas: {constantes}")
     df.attrs["colunas_etapa"] = [c for c in colunas_etapa if c not in constantes]
+    df.attrs["linhas_brutas"] = linhas_brutas
+
+    imprimir_resumo_base(df)
+    return df
+
+
+def imprimir_resumo_base(df: pd.DataFrame) -> None:
+    """Estatísticas descritivas e porcentagens da base e do experimento."""
+    linhas_brutas = df.attrs["linhas_brutas"]
+    treino = df["ano"] <= ANO_CORTE_TREINO
+    teste = df["ano"] >= ANO_INICIO_TESTE
+    pct_inedito_antes = percentual_partido_inedito(df, "sigla_partido_original")
+    pct_inedito_depois = percentual_partido_inedito(df, "sigla_partido")
+    pct_troca_mandato, pct_mun_trocaram = percentual_troca_partido(df)
+    etapas = (df["anos_escolares"].value_counts(normalize=True) * 100).round(2)
 
     print("=== ANÁLISE EXPLORATÓRIA ===")
-    print(f"Linhas com IDEB atual, IDEB anterior e despesa: {len(df)}")
-    print(f"Municípios: {df['id_municipio'].nunique()} | partidos: "
-          f"{df['sigla_partido'].nunique()} | UFs: {df['sigla_uf'].nunique()}")
+    print(f"Municípios: {df['id_municipio'].nunique()} | partidos (após "
+          f"harmonização): {df['sigla_partido'].nunique()} | "
+          f"UFs: {df['sigla_uf'].nunique()}")
     print(f"Anos: {sorted(df['ano'].unique().tolist())}")
-    print(df[["ideb", "ideb_anterior", "variacao_ideb", "despesa_educacao"]]
-          .describe().round(3).to_string())
+    print(df[["ideb", "ideb_anterior", "variacao_ideb", "taxa_aprovacao_anterior",
+              "despesa_educacao"]].describe().round(3).to_string())
     print("\nVariação média do IDEB por ano:")
     print(df.groupby("ano")["variacao_ideb"].agg(["mean", "std", "count"])
           .round(3).to_string())
-    return df
+
+    print("\n=== PORCENTAGENS DA BASE E DO EXPERIMENTO ===")
+    print(f"Retenção após limpeza, 2013+, lag e despesa: "
+          f"{len(df) / linhas_brutas * 100:.1f}% ({len(df)}/{linhas_brutas} linhas)")
+    print(f"Observações -> treino: {treino.mean() * 100:.1f}% | "
+          f"teste: {teste.mean() * 100:.1f}%")
+    n_mun = df["id_municipio"].nunique()
+    mun_treino = df.loc[treino, "id_municipio"].nunique()
+    mun_teste = df.loc[teste, "id_municipio"].nunique()
+    print(f"Municípios únicos -> treino: {mun_treino / n_mun * 100:.1f}% | "
+          f"teste: {mun_teste / n_mun * 100:.1f}%")
+    print(f"Linhas do teste com partido inédito no treino: "
+          f"{pct_inedito_antes:.2f}% (siglas originais) -> "
+          f"{pct_inedito_depois:.2f}% (harmonizadas)")
+    print(f"Troca de partido entre mandatos consecutivos: {pct_troca_mandato:.1f}% "
+          f"das transições | {pct_mun_trocaram:.1f}% dos municípios trocaram ao "
+          f"menos uma vez")
+    print("Composição por etapa (%):")
+    print(etapas.to_string())
+
+    resumo = {
+        "retencao_pct": len(df) / linhas_brutas * 100,
+        "linhas_final": len(df),
+        "linhas_brutas": linhas_brutas,
+        "treino_pct": treino.mean() * 100,
+        "teste_pct": teste.mean() * 100,
+        "municipios_treino_pct": mun_treino / n_mun * 100,
+        "municipios_teste_pct": mun_teste / n_mun * 100,
+        "partido_inedito_original_pct": pct_inedito_antes,
+        "partido_inedito_harmonizado_pct": pct_inedito_depois,
+        "troca_partido_transicoes_pct": pct_troca_mandato,
+        "municipios_com_troca_pct": pct_mun_trocaram,
+        **{f"etapa_{k}_pct": float(v) for k, v in etapas.items()},
+    }
+    pd.Series(resumo, name="valor").round(3).to_csv(
+        CAMINHO_RESUMO_BASE, index_label="indicador"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -194,12 +311,14 @@ def preparar_dados(caminho: Path, caminho_despesa: Path) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 def definir_blocos(colunas_etapa: list[str]) -> dict[str, dict[str, list[str]]]:
     """Blocos cumulativos da ablação: cada um lista colunas numéricas/categóricas."""
-    a = {"num": ["ideb_anterior", "ano"], "cat": list(colunas_etapa)}
+    a0 = {"num": ["ideb_anterior", "ano"], "cat": list(colunas_etapa)}
+    a = {"num": a0["num"] + ["taxa_aprovacao_anterior"], "cat": a0["cat"]}
     b = {"num": a["num"], "cat": a["cat"] + ["sigla_uf"]}
     c = {"num": b["num"] + ["log_despesa_educacao"], "cat": b["cat"]}
     d = {"num": c["num"], "cat": c["cat"] + ["sigla_partido"]}
     return {
-        "A inércia": a,
+        "A0 inércia básica": a0,
+        "A + taxa aprov. anterior": a,
         "B + região (UF)": b,
         "C + despesa": c,
         "D + partido": d,
@@ -232,10 +351,13 @@ def para_escala_ideb(pred: np.ndarray, base: pd.DataFrame, modo: str) -> np.ndar
 
 
 def metricas(y_real, y_pred) -> dict[str, float]:
+    y = np.asarray(y_real, dtype=float)
     return {
-        "rmse": float(np.sqrt(mean_squared_error(y_real, y_pred))),
-        "mae": float(mean_absolute_error(y_real, y_pred)),
-        "r2": float(r2_score(y_real, y_pred)),
+        "rmse": float(np.sqrt(mean_squared_error(y, y_pred))),
+        "mae": float(mean_absolute_error(y, y_pred)),
+        "mape_pct": float(np.mean(np.abs(y - y_pred) / y) * 100),  # IDEB >= 1,2
+        "r2": float(r2_score(y, y_pred)),
+        "r2_pct": float(r2_score(y, y_pred) * 100),
     }
 
 
@@ -277,12 +399,28 @@ def intervalo_bootstrap(
     return float(dif_erro.mean()), *np.percentile(medias, [2.5, 97.5])
 
 
+def taxa_vitoria_por_municipio(
+    dif_erro: np.ndarray, municipios: np.ndarray, tolerancia: float = 1e-9
+) -> tuple[float, float, float]:
+    """% de municípios em que D erra menos / empata / erra mais que C.
+
+    ``dif_erro`` = erro absoluto de C - erro absoluto de D; o erro de cada
+    município é a média dos seus erros no teste.
+    """
+    por_municipio = pd.Series(dif_erro).groupby(municipios).mean()
+    vitorias = (por_municipio > tolerancia).mean() * 100
+    empates = (por_municipio.abs() <= tolerancia).mean() * 100
+    return float(vitorias), float(empates), float(100 - vitorias - empates)
+
+
 # --------------------------------------------------------------------------
 # Execução
 # --------------------------------------------------------------------------
 def main() -> None:
+    DIR_RESULTADOS.mkdir(parents=True, exist_ok=True)
     df = preparar_dados(CAMINHO_DADOS, CAMINHO_DESPESA)
     blocos = definir_blocos(df.attrs["colunas_etapa"])
+    nomes_blocos = list(blocos)
 
     treino = df[df["ano"] <= ANO_CORTE_TREINO].reset_index(drop=True)
     teste = df[df["ano"] >= ANO_INICIO_TESTE].reset_index(drop=True)
@@ -303,6 +441,7 @@ def main() -> None:
     # Baselines.
     registrar("Baseline média", "-", "-", np.full(len(teste), treino[COLUNA_ALVO].mean()))
     registrar("Baseline persistência", "-", "-", teste["ideb_anterior"].to_numpy())
+    mae_persistencia = resultados[-1]["mae"]
 
     # Ajuste de hiperparâmetros: uma vez por alvo, no bloco completo (D).
     print("\n=== AJUSTE DE HIPERPARÂMETROS (janela expansiva no treino) ===")
@@ -323,25 +462,53 @@ def main() -> None:
                 modelos_ajustados[(rotulo, modo, nome_bloco)] = pipe
 
     tabela = pd.DataFrame(resultados)
+    tabela["reducao_mae_vs_persistencia_pct"] = (
+        (mae_persistencia - tabela["mae"]) / mae_persistencia * 100
+    )
     tabela.to_csv(CAMINHO_RESULTADOS, index=False)
-    with pd.option_context("display.width", 200, "display.float_format", "{:.4f}".format):
+    with pd.option_context("display.width", 220, "display.float_format", "{:.4f}".format):
         print("\n=== RESULTADOS NO TESTE TEMPORAL (escala do IDEB) ===")
-        print(tabela.to_string(index=False))
+        print(tabela.drop(columns=["r2_pct"]).to_string(index=False))
 
-    # Contribuição do partido: bloco D contra bloco C, com IC por município.
-    print("\n=== CONTRIBUIÇÃO DO PARTIDO (D vs C; positivo = partido ajuda) ===")
-    municipios = teste["id_municipio"].to_numpy()
+    # Variância explicada (%) e ganho em pontos percentuais ao longo da ablação.
+    print("\n=== R² (%) E GANHO EM PONTOS PERCENTUAIS ENTRE BLOCOS ===")
     for rotulo in ("Random Forest", "Regressão linear"):
         for modo in ("nivel", "variacao"):
-            dif = (erros_abs[(rotulo, modo, "C + despesa")]
-                   - erros_abs[(rotulo, modo, "D + partido")])
+            r2s = [tabela[(tabela["modelo"] == rotulo) & (tabela["alvo"] == modo)
+                          & (tabela["blocos"] == b)]["r2_pct"].iloc[0]
+                   for b in nomes_blocos]
+            passos = [f"{nomes_blocos[i]}: {r2s[i] - r2s[i - 1]:+.2f} p.p."
+                      for i in range(1, len(r2s))]
+            print(f"{rotulo:17s} | alvo={modo:8s} | R² de {r2s[0]:.2f}% (A0) a "
+                  f"{r2s[-1]:.2f}% (D) | " + " | ".join(passos))
+
+    # Contribuição do partido: bloco D contra bloco C.
+    print("\n=== CONTRIBUIÇÃO DO PARTIDO (D vs C; positivo = partido ajuda) ===")
+    municipios = teste["id_municipio"].to_numpy()
+    linhas_partido = []
+    for rotulo in ("Random Forest", "Regressão linear"):
+        for modo in ("nivel", "variacao"):
+            erro_c = erros_abs[(rotulo, modo, "C + despesa")]
+            erro_d = erros_abs[(rotulo, modo, "D + partido")]
+            dif = erro_c - erro_d
             media, lo, hi = intervalo_bootstrap(dif, municipios)
+            reducao_pct = media / erro_c.mean() * 100
+            vit, emp, der = taxa_vitoria_por_municipio(dif, municipios)
             veredito = ("melhora" if lo > 0 else "piora" if hi < 0
                         else "sem efeito distinguível de zero")
             if max(abs(lo), abs(hi)) < LIMIAR_RELEVANCIA:
                 veredito += f" (efeito desprezível: < {LIMIAR_RELEVANCIA} ponto de IDEB)"
             print(f"{rotulo:17s} | alvo={modo:8s} | ganho de MAE = {media:+.4f} "
-                  f"(IC95% {lo:+.4f} a {hi:+.4f}) -> {veredito}")
+                  f"(IC95% {lo:+.4f} a {hi:+.4f}) = {reducao_pct:+.2f}% do MAE de C")
+            print(f"{'':17s} | municípios: D melhor em {vit:.1f}%, empate "
+                  f"{emp:.1f}%, D pior em {der:.1f}% -> {veredito}")
+            linhas_partido.append({
+                "modelo": rotulo, "alvo": modo, "ganho_mae": media, "ic95_inf": lo,
+                "ic95_sup": hi, "reducao_mae_pct": reducao_pct,
+                "municipios_d_melhor_pct": vit, "municipios_empate_pct": emp,
+                "municipios_d_pior_pct": der, "veredito": veredito,
+            })
+    pd.DataFrame(linhas_partido).round(5).to_csv(CAMINHO_PARTIDO, index=False)
 
     # Importância por permutação (variáveis originais, não dummies) no teste.
     print(f"\n=== IMPORTÂNCIA POR PERMUTAÇÃO — RF, alvo={MODO_PRINCIPAL}, bloco D ===")
@@ -349,7 +516,8 @@ def main() -> None:
     colunas_d = bloco_completo["num"] + bloco_completo["cat"]
     perm = permutation_importance(
         pipe_rf, teste[colunas_d], teste[coluna_alvo(MODO_PRINCIPAL)],
-        scoring="neg_mean_absolute_error", n_repeats=5, random_state=SEED, n_jobs=-1,
+        scoring="neg_mean_absolute_error", n_repeats=N_REPETICOES_PERMUTACAO,
+        random_state=SEED, n_jobs=-1,
     )
     imp = (pd.DataFrame({"variavel": colunas_d, "aumento_mae": perm.importances_mean,
                          "desvio": perm.importances_std})
@@ -369,13 +537,12 @@ def main() -> None:
     # Gráficos.
     comp = tabela[(tabela["blocos"].isin(["-", "D + partido"]))
                   & (tabela["alvo"].isin(["-", MODO_PRINCIPAL]))].copy()
-    comp["rotulo"] = comp["modelo"]
     plt.figure(figsize=(9, 4.5))
-    plt.barh(comp["rotulo"], comp["mae"])
+    plt.barh(comp["modelo"], comp["mae"])
     plt.xlabel("MAE no teste (menor é melhor)")
     plt.title(f"Modelos completos (alvo: {MODO_PRINCIPAL}) vs baselines")
     plt.tight_layout()
-    plt.savefig(BASE_DIR / "grafico_comparacao_modelos.png", dpi=150)
+    plt.savefig(DIR_RESULTADOS / "grafico_comparacao_modelos.png", dpi=150)
     plt.close()
 
     plt.figure(figsize=(9, 4.5))
@@ -384,7 +551,7 @@ def main() -> None:
     plt.xlabel("Aumento do MAE ao embaralhar a variável")
     plt.title("Importância por permutação (teste temporal)")
     plt.tight_layout()
-    plt.savefig(BASE_DIR / "grafico_feature_importance.png", dpi=150)
+    plt.savefig(DIR_RESULTADOS / "grafico_feature_importance.png", dpi=150)
     plt.close()
 
     pred_rf = para_escala_ideb(pipe_rf.predict(teste[colunas_d]), teste, MODO_PRINCIPAL)
@@ -397,10 +564,11 @@ def main() -> None:
     plt.title("Random Forest — real vs. previsto (teste temporal)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(BASE_DIR / "grafico_real_vs_previsto.png", dpi=150)
+    plt.savefig(DIR_RESULTADOS / "grafico_real_vs_previsto.png", dpi=150)
     plt.close()
 
-    print(f"\nResultados salvos em '{CAMINHO_RESULTADOS.name}' e gráficos exportados.")
+    print(f"\nSalvos: '{CAMINHO_RESULTADOS.name}', '{CAMINHO_PARTIDO.name}', "
+          f"'{CAMINHO_RESUMO_BASE.name}' e os gráficos.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,15 @@
+indicador,valor
+retencao_pct,60.006
+linhas_final,53183.0
+linhas_brutas,88630.0
+treino_pct,57.928
+teste_pct,42.072
+municipios_treino_pct,97.94
+municipios_teste_pct,99.063
+partido_inedito_original_pct,4.349
+partido_inedito_harmonizado_pct,0.259
+troca_partido_transicoes_pct,69.616
+municipios_com_troca_pct,93.504
+etapa_INICIAIS (1-5)_pct,63.18
+etapa_FINAIS (6-9)_pct,36.62
+etapa_TODOS (1-4)_pct,0.2
