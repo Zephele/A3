@@ -1,28 +1,57 @@
-# Predição do IDEB Municipal
+# Predição do IDEB Municipal e papel do partido do prefeito
 
-Projeto de Ciência de Dados que avalia o poder preditivo do investimento
-público em educação e da filiação partidária sobre o IDEB da rede municipal
-no Brasil.
+Projeto A3 (Sistemas de Controle e Inteligência Artificial).
+
+**Pergunta:** o partido do prefeito ajuda a prever o IDEB municipal *além* do
+histórico do próprio município (IDEB anterior), da UF e da despesa em educação?
 
 ## Fontes de dados
 
-- `br_inep_ideb_municipio.csv`: INEP, com notas por município, rede e etapa.
-- `bq-results.csv`: TSE, com resultados eleitorais.
-- `investimento_educacao.csv`: SICONFI/STN, com despesa municipal em educação.
+| Arquivo | Origem | Conteúdo |
+|---|---|---|
+| `br_inep_ideb_municipio.csv` | INEP (via Base dos Dados) | IDEB por município, rede e etapa |
+| `bq-results.csv` | TSE (via Base dos Dados) | resultados de eleições municipais |
+| `investimento_educacao.csv` | SICONFI/STN | despesa municipal em educação (2013+) |
 
-## Execução
+> Preencher: links exatos e licença de cada base (necessário para a seção de ética).
+
+## Como reproduzir
 
 ```bash
 pip install -r requirements.txt
-python preprocess.py
-python a3.py
+python preprocess.py   # cruza TSE x INEP e gera base_treino_model.csv
+python a3.py           # modela, avalia e gera resultados_modelos.csv + gráficos
 ```
 
-O pré-processamento separa as etapas de ensino e remove duplicidades na chave
-município-etapa-ano. O modelo usa apenas despesas com cobertura real (2013+),
-logaritmo da despesa, avaliação temporal (treino até 2019 e teste a partir de
-2021), baseline de persistência e validação agrupada por município.
+## Metodologia (resumo)
 
-O split aleatório 80/20 é mantido somente como diagnóstico de possível
-vazamento, não como avaliação principal. As importâncias do modelo indicam
-associação preditiva, não causalidade.
+- **Avaliação temporal:** treino com anos <= 2019; teste com anos >= 2021.
+- **IDEB anterior:** IDEB do mesmo município e etapa dois anos antes.
+- **Baselines:** média do treino e persistência (IDEB anterior).
+- **Alvos:** nível do IDEB e variação (IDEB - IDEB anterior).
+- **Ablação em blocos:** A inércia -> B + UF -> C + despesa -> D + partido.
+  O efeito do partido é a diferença D vs C, com IC 95% por bootstrap em
+  blocos de município.
+- **Ajuste de hiperparâmetros:** busca aleatória com janelas expansivas
+  (treina no passado, valida no futuro).
+- **Split aleatório 80/20:** apenas diagnóstico de vazamento.
+
+## Resultados (teste temporal, escala do IDEB)
+
+| Modelo | MAE | R² |
+|---|---|---|
+| Baseline média | 0,929 | -0,31 |
+| Baseline persistência | 0,450 | 0,665 |
+| Random Forest (A, só inércia + etapa) | 0,407 | 0,719 |
+| Random Forest (D, com partido) | 0,407 | 0,726 |
+
+O partido não melhora a previsão: o ganho de MAE do bloco D sobre o C é
+desprezível (< 0,01 ponto de IDEB). Detalhes em `resultados_modelos.csv`.
+
+## Limitações
+
+- Partido do prefeito eleito; trocas de partido e mandatos-tampão não modelados.
+- Despesa nominal (não deflacionada) e absoluta (não per capita/aluno).
+- A pandemia (SAEB 2021) cai inteira no período de teste.
+- Associação preditiva não é causalidade: partido, região e riqueza do
+  município estão correlacionados.
