@@ -1,0 +1,7 @@
+analise,comparacao,mae_sem,mae_com,ganho_mae,ic95_inf,ic95_sup,ganho_pct_do_mae,delta_r2_pp,veredito
+Partido,1. Siglas originais,0.406038,0.405953,8.5e-05,-7.6e-05,0.000258,0.020936,0.007942,sem efeito distinguível de zero (desprezível: < 0.01 ponto de IDEB)
+Partido,2. Siglas harmonizadas,0.406038,0.406092,-5.4e-05,-0.000226,0.00012,-0.013319,0.001689,sem efeito distinguível de zero (desprezível: < 0.01 ponto de IDEB)
+Partido,"3. Harmonizadas, com ano_mandato nos dois blocos",0.421609,0.420259,0.00135,0.001155,0.00155,0.320213,0.148957,ajuda (desprezível: < 0.01 ponto de IDEB)
+Partido,"4. Harmonizadas, ano_mandato + trocou_partido no D",0.421609,0.419981,0.001629,0.001342,0.001941,0.386301,0.156656,ajuda (desprezível: < 0.01 ponto de IDEB)
+Outra variável,5. ano_mandato sobre o bloco C,0.406038,0.421609,-0.015572,-0.016686,-0.014449,-3.835052,-1.944386,piora
+Outra variável,6. taxa_aprovacao_anterior sobre o bloco A0,0.406635,0.408326,-0.001691,-0.002237,-0.001126,-0.415799,-0.13228,piora (desprezível: < 0.01 ponto de IDEB)

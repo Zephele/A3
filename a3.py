@@ -86,14 +86,30 @@ N_REPETICOES_PERMUTACAO = 20
 LIMIAR_RELEVANCIA = 0.01
 
 HARMONIZAR_PARTIDOS = True
+# Fonte: TSE, "Partidos políticos registrados no TSE" (fusões, incorporações e
+# mudanças de nome). As chaves seguem a grafia da base em maiúsculas.
 MAPA_PARTIDOS = {
-    # renomeações
-    "PMDB": "MDB", "PT DO B": "AVANTE", "PTN": "PODE", "PSDC": "DC",
-    "PR": "PL", "PPS": "CIDADANIA", "PRB": "REPUBLICANOS", "PEN": "PATRIOTA",
-    # fusões e incorporações
-    "PFL": "UNIÃO", "DEM": "UNIÃO", "PSL": "UNIÃO",
-    "PTB": "PRD", "PATRIOTA": "PRD",
-    "PHS": "PODE", "PSC": "PODE", "PROS": "SOLIDARIEDADE", "PPL": "PC DO B",
+    # Fusões (nasce um partido novo)
+    "DEM": "UNIÃO", "PSL": "UNIÃO", "PFL": "UNIÃO",  # DEM+PSL -> UNIÃO (08/02/2022)
+    "PTB": "PRD", "PATRIOTA": "PRD",  # PTB+PATRIOTA -> PRD (09/11/2023)
+    # Incorporações
+    "PRP": "PRD",  # incorporado ao PEN/Patriota (28/03/2019); Patriota -> PRD
+    "PEN": "PRD",  # renomeado Patriota (26/04/2018); Patriota -> PRD
+    "PPL": "PC DO B",  # 28/05/2019
+    "PHS": "PODE",  # 19/09/2019
+    "PSC": "PODE",  # 15/06/2023
+    "PROS": "SOLIDARIEDADE",  # 14/02/2023
+    # Renomeações
+    "PTN": "PODE",  # 16/05/2017
+    "PT DO B": "AVANTE",  # 12/09/2017
+    "PMDB": "MDB",  # 15/05/2018
+    "PSDC": "DC",  # 17/05/2018
+    "SD": "SOLIDARIEDADE",  # 28/06/2018
+    "PR": "PL",  # 09/02/2019
+    "PRB": "REPUBLICANOS",  # 15/08/2019
+    "PPS": "CIDADANIA",  # 19/09/2019
+    "PTC": "AGIR",  # 31/03/2022
+    "PMN": "MOBILIZA",  # 05/12/2023
 }
 
 # Janelas expansivas para o ajuste de hiperparâmetros: (treino até, valida em).
@@ -154,16 +170,17 @@ def carregar_e_cruzar_dados(caminho: Path, caminho_despesa: Path) -> pd.DataFram
 
 
 def adicionar_valores_anteriores(df: pd.DataFrame, chave: list[str]) -> pd.DataFrame:
-    """Anexa IDEB e taxa de aprovação de ``PASSO_IDEB`` anos antes.
+    """Anexa IDEB, taxa de aprovação e partido de ``PASSO_IDEB`` anos antes.
 
     Usa junção por ano (e não ``shift``) para nunca puxar uma medição de um
     ano diferente do esperado quando há lacunas no painel.
     """
-    anterior = df[chave + ["ano", COLUNA_ALVO, "taxa_aprovacao"]].copy()
+    anterior = df[chave + ["ano", COLUNA_ALVO, "taxa_aprovacao", "sigla_partido"]].copy()
     anterior["ano"] = anterior["ano"] + PASSO_IDEB
     anterior = anterior.rename(columns={
         COLUNA_ALVO: "ideb_anterior",
         "taxa_aprovacao": "taxa_aprovacao_anterior",
+        "sigla_partido": "partido_anterior",
     })
     return df.merge(anterior, on=chave + ["ano"], how="left", validate="one_to_one")
 
