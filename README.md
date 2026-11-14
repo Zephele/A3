@@ -13,10 +13,10 @@ histórico do próprio município (IDEB anterior), da UF e da despesa em educaç
 | **Eleições** (`bq-results.csv`) | TSE, via Base dos Dados | [Base dos Dados](https://basedosdados.org/dataset/eef764df-bde8-4905-b115-6fc23b6ba9d6) · [Portal de Dados Abertos do TSE](https://dadosabertos.tse.jus.br/) | Creative Commons Atribuição (CC BY), conforme o Portal de Dados Abertos do TSE | 26/10/2026 | Considera só o partido do prefeito eleito (sem coligações, trocas de partido no mandato ou mandatos-tampão) |
 | **Despesa em educação** (`investimento_educacao.csv`) | SICONFI/FINBRA, Tesouro Nacional, via Base dos Dados | [Base dos Dados](https://basedosdados.org/dataset/5a3dec52-8740-460e-b31d-0e0347979da0) · [SICONFI: consulta FINBRA](https://siconfi.tesouro.gov.br/siconfi/pages/public/consulta_finbra/finbra_list.jsf) · [Tesouro Transparente](https://www.tesourotransparente.gov.br/consultas/consultas-siconfi/siconfi-finbra-demonstrativos-de-contas-anuais) | Dado público (LAI; LRF, LC 101/2000). Conferir a licença na página do conjunto; citar a fonte. | 09/11/2026 | Valores nominais (sem deflação) e absolutos (não per capita nem por aluno); cobertura utilizada a partir de 2013; depende da declaração dos municípios |
 
-> Os CSVs `bq-results.csv` e `investimento_educacao.csv` vieram de consultas
-> na Base dos Dados (BigQuery). Registrar em `consultas/` o SQL usado em cada um
-> (tabela, colunas, filtro de função de despesa) para que a coleta seja
-> reproduzível.
+> A coleta dos CSVs `bq-results.csv` e `investimento_educacao.csv` foi feita
+> manualmente na Base dos Dados (BigQuery). Os arquivos brutos estão versionados
+> em `dados/brutos/`, portanto a análise pode ser reproduzida a partir dos
+> próprios arquivos; os SQLs históricos da coleta não foram preservados.
 
 ## Como reproduzir
 
